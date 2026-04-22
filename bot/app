@@ -1,0 +1,114 @@
+async function loadJson(path) {
+  const res = await fetch(path, { cache: "no-store" })
+  if (!res.ok) throw new Error(`Failed to load ${path}`)
+  return res.json()
+}
+
+function metric(label, value, cls = "") {
+  return `
+    <div class="metric">
+      <div class="metric-label">${label}</div>
+      <div class="metric-value ${cls}">${value}</div>
+    </div>
+  `
+}
+
+function clsForNumber(x) {
+  if (x > 0) return "pos"
+  if (x < 0) return "neg"
+  return "neu"
+}
+
+function renderModels(models) {
+  if (!models.length) return '<p class="small">No model stats yet</p>'
+  const rows = models.map(m => `
+    <tr>
+      <td>${m.model}</td>
+      <td>${m.trades}</td>
+      <td>${m.winrate}%</td>
+      <td class="${clsForNumber(m.avg_r)}">${m.avg_r}</td>
+      <td class="${clsForNumber(m.net_r)}">${m.net_r}</td>
+    </tr>
+  `).join("")
+  return `<table><thead><tr><th>Model</th><th>Trades</th><th>WR</th><th>Avg R</th><th>Net R</th></tr></thead><tbody>${rows}</tbody></table>`
+}
+
+function renderTrades(trades) {
+  if (!trades.length) return '<p class="small">No trades yet</p>'
+  const rows = trades.slice().reverse().slice(0, 20).map(t => `
+    <tr>
+      <td>${new Date(t.time).toLocaleString()}</td>
+      <td>${t.model}</td>
+      <td>${t.session}</td>
+      <td>${t.market_state}</td>
+      <td>${t.rr}</td>
+      <td class="${clsForNumber(t.result_r)}">${t.result_r}</td>
+      <td>${t.exit_reason}</td>
+    </tr>
+  `).join("")
+  return `<table><thead><tr><th>Time</th><th>Model</th><th>Session</th><th>State</th><th>RR</th><th>Result R</th><th>Exit</th></tr></thead><tbody>${rows}</tbody></table>`
+}
+
+function renderSignals(signals) {
+  if (!signals.length) return '<p class="small">No recent signals</p>'
+  return signals.slice().reverse().slice(0, 10).map(s => `
+    <div class="signal-item">
+      <div><strong>${s.model}</strong> · ${s.session}</div>
+      <div class="small">${new Date(s.time).toLocaleString()}</div>
+      <div class="small">Entry ${s.entry} | Stop ${s.stop} | TP ${s.tp}</div>
+    </div>
+  `).join("")
+}
+
+async function main() {
+  const [summary, equity, trades, models, signals] = await Promise.all([
+    loadJson("dashboard_data/summary.json"),
+    loadJson("dashboard_data/equity.json"),
+    loadJson("dashboard_data/trades.json"),
+    loadJson("dashboard_data/models.json"),
+    loadJson("dashboard_data/signals.json")
+  ])
+
+  document.getElementById("status-pill").textContent = summary.status.toUpperCase()
+  document.getElementById("last-update").textContent = `Updated ${new Date(summary.last_update_utc).toLocaleString()}`
+
+  document.getElementById("metrics").innerHTML = [
+    metric("Market", summary.market),
+    metric("Trades", summary.total_trades),
+    metric("Winrate", `${summary.winrate}%`),
+    metric("Avg R", summary.avg_r, clsForNumber(summary.avg_r)),
+    metric("Net R", summary.net_r, clsForNumber(summary.net_r)),
+  ].join("")
+
+  document.getElementById("models-table").innerHTML = renderModels(models)
+  document.getElementById("trades-table").innerHTML = renderTrades(trades)
+  document.getElementById("signals-list").innerHTML = renderSignals(signals)
+
+  const ctx = document.getElementById("equityChart")
+  new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: equity.map(x => x.trade_id),
+      datasets: [{
+        label: "Cum R",
+        data: equity.map(x => x.cum_r),
+        tension: 0.25,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: "#eef2ff" } } },
+      scales: {
+        x: { ticks: { color: "#9aa5ce" }, grid: { color: "rgba(255,255,255,0.06)" } },
+        y: { ticks: { color: "#9aa5ce" }, grid: { color: "rgba(255,255,255,0.06)" } },
+      }
+    }
+  })
+}
+
+main().catch(err => {
+  console.error(err)
+  document.getElementById("metrics").innerHTML = `<div class="metric"><div class="metric-label">Error</div><div class="metric-value neg">Dashboard data missing</div></div>`
+})
