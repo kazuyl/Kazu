@@ -1,200 +1,462 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import math
+import os
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
 
 import pandas as pd
+import yfinance as yf
 
-from data_loader import fetch_market_frames
-from dashboard_export import build_equity, build_models, build_summary
-from github_store import GitHubStore
-from strategy_core import add_indicators, analyze_regime, build_primary_scenario, get_session
-
-
-STATE_FILE = "bot_state.json"
-SUMMARY_FILE = "summary.json"
-TRADES_FILE = "trades.json"
-SIGNALS_FILE = "signals.json"
-EQUITY_FILE = "equity.json"
-MODELS_FILE = "models.json"
+from strategy_core import (
+    USE_MODELS,
+    add_indicators,
+    analyze_regime,
+    build_primary_scenario,
+    classify_market_state,
+    get_session,
+)
 
 
-def _regime_df(df: pd.DataFrame, label: str) -> pd.DataFrame:
-    df = add_indicators(df)
-    regimes = df.apply(analyze_regime, axis=1, result_type="expand")
-    df[f"regime_{label}"] = regimes[0]
-    df[f"confidence_{label}"] = regimes[1]
-    keep = [f"regime_{label}", f"confidence_{label}"]
-    if label == "5m":
-        keep += ["Close", "High", "Low", "Open", "ema21", "atr"]
+SYMBOL = "NQ=F"
+STATE_FILE = "docs/bot_state.json"
+
+
+# -------------------------
+# GitHub store helpers
+# -------------------------
+class GitHubStore:
+    def __init__(self) -> None:
+        self.token = os.environ["GITHUB_TOKEN"]
+        self.owner = os.environ["GITHUB_OWNER"]
+        self.repo = os.environ["GITHUB_REPO"]
+        self.branch = os.environ.get("GITHUB_BRANCH", "main")
+        self.dashboard_dir = os.environ.get("GITHUB_DASHBOARD_DIR", "docs")
+
+        import requests
+
+        self.requests = requests
+        self.base = f"https://api.github.com/repos/{self.owner}/{self.repo}/contents"
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+    def read_json(self, path: str, default):
+        import base64
+
+        url = f"{self.base}/{path}?ref={self.branch}"
+        resp = self.requests.get(url, headers=self._headers(), timeout=30)
+
+        if resp.status_code == 404:
+            return default
+
+        resp.raise_for_status()
+        payload = resp.json()
+        raw = base64.b64decode(payload["content"]).decode("utf-8")
+        return json.loads(raw)
+
+    def write_json(self, path: str, obj: dict | list, message: str):
+        import base64
+
+        url = f"{self.base}/{path}"
+        raw = json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+        content = base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+
+        get_resp = self.requests.get(
+            f"{url}?ref={self.branch}",
+            headers=self._headers(),
+            timeout=30,
+        )
+
+        sha = None
+        if get_resp.status_code == 200:
+            sha = get_resp.json()["sha"]
+        elif get_resp.status_code != 404:
+            get_resp.raise_for_status()
+
+        payload = {
+            "message": message,
+            "content": content,
+            "branch": self.branch,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        put_resp = self.requests.put(
+            url,
+            headers=self._headers(),
+            json=payload,
+            timeout=30,
+        )
+        put_resp.raise_for_status()
+
+
+# -------------------------
+# Data loading
+# -------------------------
+def load_ohlcv(symbol: str, interval: str, period: str) -> pd.DataFrame:
+    df = yf.download(symbol, interval=interval, period=period, auto_adjust=False, progress=False)
+
+    if df.empty:
+        raise ValueError(f"No data returned for {symbol} {interval} {period}")
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.rename_axis("Datetime")
+    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     return df
 
 
-def _build_live_row() -> tuple[pd.Series, pd.DataFrame]:
-    frames = fetch_market_frames("NQ=F")
-    if frames.df_5m.empty or frames.df_1h.empty or frames.df_4h.empty:
-        raise RuntimeError("Missing market data for one or more timeframes")
+def prepare_live_frame(symbol: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df_5m = add_indicators(load_ohlcv(symbol, "5m", "20d"))
+    df_1h = add_indicators(load_ohlcv(symbol, "60m", "45d"))
+    df_4h = add_indicators(load_ohlcv(symbol, "1h", "90d"))
 
-    df5 = _regime_df(frames.df_5m, "5m")
-    df1 = _regime_df(frames.df_1h, "1h")[["regime_1h", "confidence_1h"]]
-    df4 = _regime_df(frames.df_4h, "4h")[["regime_4h", "confidence_4h"]]
+    # resample to 4h from 1h for more stable yf behavior
+    df_4h = (
+        df_4h.resample("4h")
+        .agg(
+            {
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            }
+        )
+        .dropna()
+    )
+    df_4h = add_indicators(df_4h)
 
-    df = df5.copy()
-    df.index = pd.to_datetime(df.index, utc=True)
-    df1.index = pd.to_datetime(df1.index, utc=True)
-    df4.index = pd.to_datetime(df4.index, utc=True)
-
-    df = pd.merge_asof(df.sort_index(), df1.sort_index(), left_index=True, right_index=True, direction="backward")
-    df = pd.merge_asof(df.sort_index(), df4.sort_index(), left_index=True, right_index=True, direction="backward")
-    df["session"] = [get_session(ts) for ts in df.index]
-
-    row = df.iloc[-1].copy()
-    row.name = df.index[-1]
-    return row, df
-
-
-def _signal_id(ts: str, model: str, entry: float, stop: float, tp: float) -> str:
-    raw = f"{ts}|{model}|{entry:.2f}|{stop:.2f}|{tp:.2f}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return df_5m, df_1h, df_4h
 
 
-def _load_state(store: GitHubStore) -> dict[str, Any]:
-    state = store.read_json(
-        STATE_FILE,
+# -------------------------
+# State
+# -------------------------
+def _default_state() -> dict:
+    return {
+        "open_trade": None,
+        "closed_trades": [],
+        "signals": [],
+        "equity_curve": [],
+        "trade_counter": 0,
+    }
+
+
+def _load_state(store: GitHubStore) -> dict:
+    return store.read_json(STATE_FILE, _default_state())
+
+
+def _save_state(store: GitHubStore, state: dict) -> None:
+    store.write_json(STATE_FILE, state, "update bot state")
+
+
+# -------------------------
+# Helpers
+# -------------------------
+def _safe_float(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return round(float(value), 4)
+
+
+def _regime_payload(regime: str, confidence: int | float) -> dict:
+    return {
+        "regime": regime,
+        "confidence": int(confidence),
+    }
+
+
+def _build_latest_row(df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFrame) -> pd.Series:
+    row = df_5m.iloc[-1].copy()
+
+    regime_5m, conf_5m = analyze_regime(df_5m.iloc[-1])
+    regime_1h, conf_1h = analyze_regime(df_1h.iloc[-1])
+    regime_4h, conf_4h = analyze_regime(df_4h.iloc[-1])
+
+    row["regime_5m"] = regime_5m
+    row["confidence_5m"] = conf_5m
+    row["regime_1h"] = regime_1h
+    row["confidence_1h"] = conf_1h
+    row["regime_4h"] = regime_4h
+    row["confidence_4h"] = conf_4h
+    row["session"] = get_session(df_5m.index[-1])
+    row["market_state"] = classify_market_state(row)
+
+    return row
+
+
+def _build_context_payload(row: pd.Series, symbol: str) -> dict:
+    active_models = [name for name, enabled in USE_MODELS.items() if enabled]
+    return {
+        "last_update_utc": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol,
+        "session": row["session"],
+        "market_state": row["market_state"],
+        "price": _safe_float(row["Close"]),
+        "regime_5m": row["regime_5m"],
+        "confidence_5m": int(row["confidence_5m"]),
+        "regime_1h": row["regime_1h"],
+        "confidence_1h": int(row["confidence_1h"]),
+        "regime_4h": row["regime_4h"],
+        "confidence_4h": int(row["confidence_4h"]),
+        "rsi": _safe_float(row["rsi"]),
+        "atr": _safe_float(row["atr"]),
+        "ema9": _safe_float(row["ema9"]),
+        "ema21": _safe_float(row["ema21"]),
+        "ema50": _safe_float(row["ema50"]),
+        "close_vs_ema21_atr": _safe_float(row["close_vs_ema21_atr"]),
+        "range_pct_atr": _safe_float(row["range_pct_atr"]),
+        "active_models": active_models,
+    }
+
+
+def _build_price_chart_payload(df_5m: pd.DataFrame, bars: int = 120) -> list[dict]:
+    tail = df_5m.tail(bars)
+    out = []
+    for idx, r in tail.iterrows():
+        out.append(
+            {
+                "time": idx.isoformat() if hasattr(idx, "isoformat") else str(idx),
+                "close": _safe_float(r["Close"]),
+                "ema9": _safe_float(r["ema9"]),
+                "ema21": _safe_float(r["ema21"]),
+            }
+        )
+    return out
+
+
+def _current_unrealized_r(trade: dict, current_price: float) -> float | None:
+    if not trade:
+        return None
+    if trade["side"] != "long":
+        return None
+
+    risk = trade["entry"] - trade["stop"]
+    if risk <= 0:
+        return None
+    return round((current_price - trade["entry"]) / risk, 2)
+
+
+def _update_open_trade(state: dict, current_price: float, latest_ts: str) -> None:
+    open_trade = state.get("open_trade")
+    if not open_trade:
+        return
+
+    side = open_trade["side"]
+    stop = open_trade["stop"]
+    tp = open_trade["tp"]
+    entry = open_trade["entry"]
+
+    close_reason = None
+    result_r = None
+
+    if side == "long":
+        risk = entry - stop
+        if current_price <= stop:
+            close_reason = "stop"
+            result_r = -1.0
+        elif current_price >= tp:
+            close_reason = "tp"
+            result_r = round((tp - entry) / risk, 2)
+
+    if close_reason:
+        closed = open_trade.copy()
+        closed["closed_at"] = latest_ts
+        closed["close_reason"] = close_reason
+        closed["exit_price"] = stop if close_reason == "stop" else tp
+        closed["result_r"] = result_r
+
+        state["closed_trades"].append(closed)
+
+        prev_cum = state["equity_curve"][-1]["cum_r"] if state["equity_curve"] else 0.0
+        new_cum = round(prev_cum + result_r, 2)
+        state["equity_curve"].append(
+            {
+                "trade_id": closed["trade_id"],
+                "cum_r": new_cum,
+                "model": closed["model"],
+                "result_r": result_r,
+            }
+        )
+        state["open_trade"] = None
+
+
+def _maybe_open_trade(state: dict, scenario: dict, current_price: float, latest_ts: str) -> None:
+    if state.get("open_trade") is not None:
+        return
+
+    if scenario.get("status") != "conditional":
+        return
+
+    if scenario.get("side") != "long":
+        return
+
+    if scenario.get("entry") is None or scenario.get("stop") is None or scenario.get("tp") is None:
+        return
+
+    # simple paper fill: open when conditional setup exists on current bar
+    state["trade_counter"] += 1
+    state["open_trade"] = {
+        "trade_id": state["trade_counter"],
+        "opened_at": latest_ts,
+        "model": scenario.get("entry_model"),
+        "side": scenario.get("side"),
+        "entry": float(current_price),
+        "stop": float(scenario["stop"]),
+        "tp": float(scenario["tp"]),
+        "rr": float(scenario["rr"]) if scenario.get("rr") is not None else None,
+        "bars_held": 0,
+    }
+
+    state["signals"].insert(
+        0,
         {
-            "market": "NQ=F",
-            "period": "live paper trading",
-            "signals": [],
-            "trades": [],
-            "open_trades": [],
+            "time": latest_ts,
+            "model": scenario.get("entry_model"),
+            "status": "triggered",
+            "side": scenario.get("side"),
+            "market_state": scenario.get("market_state"),
         },
     )
-    state.setdefault("signals", [])
-    state.setdefault("trades", [])
-    state.setdefault("open_trades", [])
-    state.setdefault("market", "NQ=F")
-    state.setdefault("period", "live paper trading")
-    return state
+    state["signals"] = state["signals"][:30]
 
 
-def _update_open_trades(state: dict[str, Any], latest_bar: pd.Series) -> None:
-    still_open = []
-    high = float(latest_bar["High"])
-    low = float(latest_bar["Low"])
-    now_iso = datetime.now(timezone.utc).isoformat()
+def _build_open_trade_payload(state: dict, current_price: float) -> dict:
+    open_trade = state.get("open_trade")
+    if not open_trade:
+        return {"has_open_trade": False}
 
-    for trade in state.get("open_trades", []):
-        side = trade.get("side")
-        entry = float(trade["entry"])
-        stop = float(trade["stop"])
-        tp = float(trade["tp"])
-        closed = False
-
-        if side == "long":
-            if low <= stop:
-                exit_price = stop
-                result_r = -1.0
-                reason = "stop"
-                closed = True
-            elif high >= tp:
-                risk = entry - stop
-                exit_price = tp
-                result_r = round((tp - entry) / risk, 2) if risk > 0 else 0.0
-                reason = "tp"
-                closed = True
-            else:
-                still_open.append(trade)
-        else:
-            still_open.append(trade)
-
-        if closed:
-            state["trades"].append(
-                {
-                    **trade,
-                    "exit_price": round(exit_price, 2),
-                    "exit_time": now_iso,
-                    "result_r": result_r,
-                    "close_reason": reason,
-                }
-            )
-
-    state["open_trades"] = still_open
-
-
-def _maybe_open_trade(state: dict[str, Any], row: pd.Series, scenario: dict[str, Any]) -> None:
-    if scenario.get("status") != "conditional" or scenario.get("side") != "long":
-        return
-
-    ts = row.name.isoformat() if hasattr(row.name, "isoformat") else str(row.name)
-    model = scenario.get("entry_model") or "unknown"
-    entry = float(scenario["entry"])
-    stop = float(scenario["stop"])
-    tp = float(scenario["tp"])
-    sig_id = _signal_id(ts, model, entry, stop, tp)
-
-    known_signal_ids = {s.get("signal_id") for s in state.get("signals", [])}
-    open_ids = {t.get("signal_id") for t in state.get("open_trades", [])}
-    trade_ids = {t.get("signal_id") for t in state.get("trades", [])}
-    if sig_id in known_signal_ids or sig_id in open_ids or sig_id in trade_ids:
-        return
-
-    signal = {
-        "signal_id": sig_id,
-        "time": ts,
-        "model": model,
-        "side": scenario.get("side"),
-        "entry": round(entry, 2),
-        "stop": round(stop, 2),
-        "tp": round(tp, 2),
-        "rr": scenario.get("rr"),
-        "market_state": scenario.get("market_state"),
-        "session": row.get("session"),
-        "status": "opened",
+    unrealized_r = _current_unrealized_r(open_trade, current_price)
+    payload = {
+        "has_open_trade": True,
+        "model": open_trade["model"],
+        "side": open_trade["side"],
+        "entry": round(open_trade["entry"], 2),
+        "stop": round(open_trade["stop"], 2),
+        "tp": round(open_trade["tp"], 2),
+        "rr": open_trade["rr"],
+        "current_price": round(current_price, 2),
+        "unrealized_r": unrealized_r,
+        "bars_held": open_trade.get("bars_held", 0),
+        "opened_at": open_trade.get("opened_at"),
     }
-    state["signals"].insert(0, signal)
-    state["signals"] = state["signals"][:100]
-
-    state["open_trades"].append(
-        {
-            **signal,
-            "open_time": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    return payload
 
 
-def _persist(store: GitHubStore, state: dict[str, Any]) -> None:
-    summary = build_summary(state)
-    equity = build_equity(state)
-    models = build_models(state)
-    signals = state.get("signals", [])[:25]
-    trades = list(reversed(state.get("trades", [])[-50:]))
-
-    store.write_json(STATE_FILE, state, "update bot state")
-    store.write_json(SUMMARY_FILE, summary, "update dashboard summary")
-    store.write_json(EQUITY_FILE, equity, "update dashboard equity")
-    store.write_json(TRADES_FILE, trades, "update dashboard trades")
-    store.write_json(SIGNALS_FILE, signals, "update dashboard signals")
-    store.write_json(MODELS_FILE, models, "update dashboard models")
+def _increment_open_trade_bars(state: dict) -> None:
+    if state.get("open_trade"):
+        state["open_trade"]["bars_held"] = state["open_trade"].get("bars_held", 0) + 1
 
 
-def main() -> None:
+def _build_summary_payload(state: dict, context: dict) -> dict:
+    closed = state.get("closed_trades", [])
+    equity = state.get("equity_curve", [])
+
+    total_trades = len(closed)
+    wins = sum(1 for t in closed if t.get("result_r", 0) > 0)
+    winrate = round((wins / total_trades) * 100, 1) if total_trades else 0.0
+
+    net_r = round(sum(t.get("result_r", 0) for t in closed), 2)
+    avg_r = round(net_r / total_trades, 2) if total_trades else 0.0
+
+    peak = -math.inf
+    max_dd = 0.0
+    for point in equity:
+        cum_r = point["cum_r"]
+        peak = max(peak, cum_r)
+        dd = peak - cum_r
+        max_dd = max(max_dd, dd)
+
+    return {
+        "last_update_utc": context["last_update_utc"],
+        "market": context["symbol"],
+        "status": "running",
+        "total_trades": total_trades,
+        "winrate": winrate,
+        "avg_r": avg_r,
+        "net_r": net_r,
+        "max_dd_r": round(max_dd, 2),
+    }
+
+
+def _build_models_payload(state: dict) -> list[dict]:
+    closed = state.get("closed_trades", [])
+    by_model: dict[str, list[dict]] = {}
+
+    for trade in closed:
+        by_model.setdefault(trade["model"], []).append(trade)
+
+    out = []
+    for model, trades in sorted(by_model.items()):
+        total = len(trades)
+        wins = sum(1 for t in trades if t.get("result_r", 0) > 0)
+        net_r = round(sum(t.get("result_r", 0) for t in trades), 2)
+        avg_r = round(net_r / total, 2) if total else 0.0
+        winrate = round((wins / total) * 100, 1) if total else 0.0
+        out.append(
+            {
+                "model": model,
+                "trades": total,
+                "winrate": winrate,
+                "avg_r": avg_r,
+                "net_r": net_r,
+            }
+        )
+
+    return out
+
+
+def main():
+    print("ACTIVE MODELS:", USE_MODELS)
+
     store = GitHubStore()
     state = _load_state(store)
-    row, df = _build_live_row()
-    _update_open_trades(state, row)
-    scenario = build_primary_scenario(row)
-    _maybe_open_trade(state, row, scenario)
-    _persist(store, state)
 
-    print(json.dumps({
-        "time": datetime.now(timezone.utc).isoformat(),
-        "scenario": scenario,
-        "open_trades": len(state.get("open_trades", [])),
-        "closed_trades": len(state.get("trades", [])),
-    }, indent=2))
+    df_5m, df_1h, df_4h = prepare_live_frame(SYMBOL)
+    latest = _build_latest_row(df_5m, df_1h, df_4h)
+
+    scenario = build_primary_scenario(latest)
+    current_price = float(latest["Close"])
+    latest_ts = df_5m.index[-1].isoformat()
+
+    _update_open_trade(state, current_price, latest_ts)
+    _increment_open_trade_bars(state)
+    _maybe_open_trade(state, scenario, current_price, latest_ts)
+
+    context_payload = _build_context_payload(latest, SYMBOL)
+    price_chart_payload = _build_price_chart_payload(df_5m, bars=120)
+    open_trade_payload = _build_open_trade_payload(state, current_price)
+    summary_payload = _build_summary_payload(state, context_payload)
+    models_payload = _build_models_payload(state)
+
+    trades_payload = state.get("closed_trades", [])[-50:]
+    signals_payload = state.get("signals", [])[:30]
+    equity_payload = state.get("equity_curve", [])
+
+    store.write_json("docs/context.json", context_payload, "update context")
+    store.write_json("docs/scenario.json", scenario, "update scenario")
+    store.write_json("docs/open_trade.json", open_trade_payload, "update open trade")
+    store.write_json("docs/price_chart.json", price_chart_payload, "update price chart")
+    store.write_json("docs/summary.json", summary_payload, "update summary")
+    store.write_json("docs/models.json", models_payload, "update models")
+    store.write_json("docs/trades.json", trades_payload, "update trades")
+    store.write_json("docs/signals.json", signals_payload, "update signals")
+    store.write_json("docs/equity.json", equity_payload, "update equity")
+
+    _save_state(store, state)
+
+    print("Live dashboard data updated successfully.")
 
 
 if __name__ == "__main__":
