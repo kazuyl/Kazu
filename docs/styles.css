@@ -10,7 +10,7 @@ body {
 }
 
 .container {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 24px;
 }
@@ -27,6 +27,7 @@ body {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 16px;
+  margin-bottom: 16px;
 }
 
 .metric-card {
@@ -50,6 +51,46 @@ body {
   border-radius: 999px;
   background: #1f2a50;
   margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.grid.two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 8px 12px;
+}
+
+.info-label {
+  opacity: 0.75;
+}
+
+.pill {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.pill-bull {
+  background: rgba(20, 180, 80, 0.18);
+  color: #7cffae;
+}
+
+.pill-bear {
+  background: rgba(220, 60, 60, 0.18);
+  color: #ff9b9b;
+}
+
+.pill-chop {
+  background: rgba(255, 185, 0, 0.18);
+  color: #ffd76a;
 }
 
 .chart-wrap {
@@ -61,7 +102,7 @@ body {
   overflow: hidden;
 }
 
-#equityChart {
+canvas {
   display: block;
   width: 100% !important;
   height: 320px !important;
@@ -72,10 +113,20 @@ pre {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
   .metrics {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .grid.two {
+    grid-template-columns: 1fr;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
   }
 }
