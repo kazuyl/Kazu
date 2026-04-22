@@ -109,6 +109,74 @@ canvas {
   max-height: 320px !important;
 }
 
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.data-table th {
+  color: #b8c1ec;
+  font-weight: 700;
+}
+
+.signal-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.signal-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.signal-model {
+  font-weight: 700;
+}
+
+.signal-status {
+  opacity: 0.8;
+}
+
+.signal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: #b8c1ec;
+}
+
+.empty-state {
+  color: #b8c1ec;
+  opacity: 0.8;
+}
+
+.text-green {
+  color: #7cffae;
+  font-weight: 700;
+}
+
+.text-red {
+  color: #ff9b9b;
+  font-weight: 700;
+}
+
+.text-muted {
+  color: #b8c1ec;
+}
+
 pre {
   white-space: pre-wrap;
   word-break: break-word;
@@ -128,5 +196,11 @@ pre {
 
   .info-grid {
     grid-template-columns: 1fr;
+  }
+
+  .signal-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
   }
 }
