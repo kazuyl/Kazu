@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from strategy_core import USE_MODELS
 import json
 import math
 import os
@@ -97,6 +97,8 @@ class GitHubStore:
 # -------------------------
 # Data loading
 # -------------------------
+active_models = [name for name, enabled in USE_MODELS.items() if enabled]
+
 def load_ohlcv(symbol: str, interval: str, period: str) -> pd.DataFrame:
     df = yf.download(symbol, interval=interval, period=period, auto_adjust=False, progress=False)
 
@@ -196,27 +198,24 @@ def _build_latest_row(df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFr
     return row
 
 
-def _build_context_payload(row: pd.Series, symbol: str) -> dict:
-    active_models = [name for name, enabled in USE_MODELS.items() if enabled]
+def _build_context_payload(row, symbol: str, active_models: list[str]) -> dict:
     return {
-        "last_update_utc": datetime.now(timezone.utc).isoformat(),
+        "last_update_utc": pd.Timestamp.utcnow().isoformat(),
         "symbol": symbol,
         "session": row["session"],
         "market_state": row["market_state"],
-        "price": _safe_float(row["Close"]),
+        "price": round(float(row["Close"]), 2),
         "regime_5m": row["regime_5m"],
         "confidence_5m": int(row["confidence_5m"]),
         "regime_1h": row["regime_1h"],
         "confidence_1h": int(row["confidence_1h"]),
         "regime_4h": row["regime_4h"],
         "confidence_4h": int(row["confidence_4h"]),
-        "rsi": _safe_float(row["rsi"]),
-        "atr": _safe_float(row["atr"]),
-        "ema9": _safe_float(row["ema9"]),
-        "ema21": _safe_float(row["ema21"]),
-        "ema50": _safe_float(row["ema50"]),
-        "close_vs_ema21_atr": _safe_float(row["close_vs_ema21_atr"]),
-        "range_pct_atr": _safe_float(row["range_pct_atr"]),
+        "rsi": round(float(row["rsi"]), 2) if pd.notna(row["rsi"]) else None,
+        "atr": round(float(row["atr"]), 2) if pd.notna(row["atr"]) else None,
+        "ema9": round(float(row["ema9"]), 2) if pd.notna(row["ema9"]) else None,
+        "ema21": round(float(row["ema21"]), 2) if pd.notna(row["ema21"]) else None,
+        "ema50": round(float(row["ema50"]), 2) if pd.notna(row["ema50"]) else None,
         "active_models": active_models,
     }
 
@@ -224,15 +223,15 @@ def _build_context_payload(row: pd.Series, symbol: str) -> dict:
 def _build_price_chart_payload(df_5m: pd.DataFrame, bars: int = 120) -> list[dict]:
     tail = df_5m.tail(bars)
     out = []
+
     for idx, r in tail.iterrows():
-        out.append(
-            {
-                "time": idx.isoformat() if hasattr(idx, "isoformat") else str(idx),
-                "close": _safe_float(r["Close"]),
-                "ema9": _safe_float(r["ema9"]),
-                "ema21": _safe_float(r["ema21"]),
-            }
-        )
+        out.append({
+            "time": idx.isoformat() if hasattr(idx, "isoformat") else str(idx),
+            "close": round(float(r["Close"]), 2),
+            "ema9": round(float(r["ema9"]), 2) if pd.notna(r["ema9"]) else None,
+            "ema21": round(float(r["ema21"]), 2) if pd.notna(r["ema21"]) else None,
+        })
+
     return out
 
 
@@ -333,25 +332,31 @@ def _maybe_open_trade(state: dict, scenario: dict, current_price: float, latest_
 
 
 def _build_open_trade_payload(state: dict, current_price: float) -> dict:
-    open_trade = state.get("open_trade")
-    if not open_trade:
+    trade = state.get("open_trade")
+
+    if not trade:
         return {"has_open_trade": False}
 
-    unrealized_r = _current_unrealized_r(open_trade, current_price)
-    payload = {
+    if trade["side"] == "long":
+        risk = trade["entry"] - trade["stop"]
+        unrealized_r = round((current_price - trade["entry"]) / risk, 2) if risk > 0 else None
+    else:
+        risk = trade["stop"] - trade["entry"]
+        unrealized_r = round((trade["entry"] - current_price) / risk, 2) if risk > 0 else None
+
+    return {
         "has_open_trade": True,
-        "model": open_trade["model"],
-        "side": open_trade["side"],
-        "entry": round(open_trade["entry"], 2),
-        "stop": round(open_trade["stop"], 2),
-        "tp": round(open_trade["tp"], 2),
-        "rr": open_trade["rr"],
+        "model": trade["model"],
+        "side": trade["side"],
+        "entry": round(trade["entry"], 2),
+        "stop": round(trade["stop"], 2),
+        "tp": round(trade["tp"], 2),
+        "rr": trade.get("rr"),
         "current_price": round(current_price, 2),
         "unrealized_r": unrealized_r,
-        "bars_held": open_trade.get("bars_held", 0),
-        "opened_at": open_trade.get("opened_at"),
+        "opened_at": trade.get("opened_at"),
+        "bars_held": trade.get("bars_held", 0),
     }
-    return payload
 
 
 def _increment_open_trade_bars(state: dict) -> None:
@@ -365,15 +370,15 @@ def _build_summary_payload(state: dict, context: dict) -> dict:
 
     total_trades = len(closed)
     wins = sum(1 for t in closed if t.get("result_r", 0) > 0)
-    winrate = round((wins / total_trades) * 100, 1) if total_trades else 0.0
+    winrate = round((wins / total_trades) * 100, 2) if total_trades else 0.0
 
     net_r = round(sum(t.get("result_r", 0) for t in closed), 2)
-    avg_r = round(net_r / total_trades, 2) if total_trades else 0.0
+    avg_r = round(net_r / total_trades, 3) if total_trades else 0.0
 
-    peak = -math.inf
+    peak = float("-inf")
     max_dd = 0.0
     for point in equity:
-        cum_r = point["cum_r"]
+        cum_r = point.get("cum_r", 0)
         peak = max(peak, cum_r)
         dd = peak - cum_r
         max_dd = max(max_dd, dd)
@@ -387,32 +392,36 @@ def _build_summary_payload(state: dict, context: dict) -> dict:
         "avg_r": avg_r,
         "net_r": net_r,
         "max_dd_r": round(max_dd, 2),
+        "active_models": context.get("active_models", []),
     }
 
 
 def _build_models_payload(state: dict) -> list[dict]:
     closed = state.get("closed_trades", [])
-    by_model: dict[str, list[dict]] = {}
+    by_model = {}
 
     for trade in closed:
-        by_model.setdefault(trade["model"], []).append(trade)
+        model = trade.get("model", "unknown")
+        by_model.setdefault(model, []).append(trade)
 
     out = []
     for model, trades in sorted(by_model.items()):
         total = len(trades)
         wins = sum(1 for t in trades if t.get("result_r", 0) > 0)
+        losses = total - wins
         net_r = round(sum(t.get("result_r", 0) for t in trades), 2)
-        avg_r = round(net_r / total, 2) if total else 0.0
-        winrate = round((wins / total) * 100, 1) if total else 0.0
-        out.append(
-            {
-                "model": model,
-                "trades": total,
-                "winrate": winrate,
-                "avg_r": avg_r,
-                "net_r": net_r,
-            }
-        )
+        avg_r = round(net_r / total, 3) if total else 0.0
+        winrate = round((wins / total) * 100, 2) if total else 0.0
+
+        out.append({
+            "model": model,
+            "trades": total,
+            "wins": wins,
+            "losses": losses,
+            "winrate": winrate,
+            "avg_r": avg_r,
+            "net_r": net_r,
+        })
 
     return out
 
