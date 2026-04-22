@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Insight Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Insight Lab Trading</p>
+        <h1>Nasdaq Bot Dashboard</h1>
+        <p class="sub">Static dashboard for GitHub Pages powered by JSON exported from your Python bot.</p>
+      </div>
+      <div class="pill" id="status-pill">Loading...</div>
+    </header>
+
+    <section class="grid metrics" id="metrics"></section>
+
+    <section class="grid main-grid">
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>Equity Curve</h2>
+          <span id="last-update">—</span>
+        </div>
+        <canvas id="equityChart"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Models</h2>
+        </div>
+        <div id="models-table"></div>
+      </div>
+    </section>
+
+    <section class="grid bottom-grid">
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>Recent Trades</h2>
+        </div>
+        <div class="table-wrap" id="trades-table"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Recent Signals</h2>
+        </div>
+        <div id="signals-list"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
