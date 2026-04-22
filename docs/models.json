@@ -1,1 +1,26 @@
-[]
+def _build_models_payload(state: dict) -> list[dict]:
+    closed = state.get("closed_trades", [])
+    by_model: dict[str, list[dict]] = {}
+
+    for trade in closed:
+        by_model.setdefault(trade["model"], []).append(trade)
+
+    out = []
+    for model, trades in sorted(by_model.items()):
+        total = len(trades)
+        wins = sum(1 for t in trades if t.get("result_r", 0) > 0)
+        net_r = round(sum(t.get("result_r", 0) for t in trades), 2)
+        avg_r = round(net_r / total, 3) if total else 0.0
+        winrate = round((wins / total) * 100, 2) if total else 0.0
+
+        out.append({
+            "model": model,
+            "trades": total,
+            "wins": wins,
+            "losses": total - wins,
+            "winrate": winrate,
+            "avg_r": avg_r,
+            "net_r": net_r,
+        })
+
+    return out
