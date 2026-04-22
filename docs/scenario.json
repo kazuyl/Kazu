@@ -8,7 +8,7 @@
   "stop": null,
   "tp": null,
   "rr": null,
-  "invalidation": "Outside preferred session",
-  "confirmation": "Wait for NY open or power hour",
+  "invalidation": "No valid entry model",
+  "confirmation": "Wait for cleaner alignment or breakout structure",
   "status": "stand aside"
 }
