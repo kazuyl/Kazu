@@ -1,7 +1,7 @@
 {
   "scenario_label": "Primary Scenario",
   "side": null,
-  "market_state": "bull_trend",
+  "market_state": "bull_pullback",
   "playbook": "stand_aside",
   "entry_model": null,
   "entry": null,
