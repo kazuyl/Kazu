@@ -11,11 +11,17 @@
   <div class="container">
     <div class="card">
       <h1>Insight Dashboard</h1>
-      <p id="status-pill">Loading...</p>
-      <p id="last-update"></p>
+      <div id="status-pill">Loading...</div>
+      <div id="last-update">Updated: -</div>
     </div>
 
-    <div id="metrics" class="metrics"></div>
+    <div id="metrics" class="metrics">
+      <div class="card metric-card"><div class="metric-label">Market</div><div id="metric-market" class="metric-value">-</div></div>
+      <div class="card metric-card"><div class="metric-label">Trades</div><div id="metric-trades" class="metric-value">0</div></div>
+      <div class="card metric-card"><div class="metric-label">Winrate</div><div id="metric-winrate" class="metric-value">0%</div></div>
+      <div class="card metric-card"><div class="metric-label">Avg R</div><div id="metric-avg-r" class="metric-value">0</div></div>
+      <div class="card metric-card"><div class="metric-label">Net R</div><div id="metric-net-r" class="metric-value">0</div></div>
+    </div>
 
     <div class="card">
       <h2>Equity Curve</h2>
@@ -25,18 +31,13 @@
     </div>
 
     <div class="card">
-      <h2>Model Stats</h2>
-      <div id="models-table"></div>
-    </div>
-
-    <div class="card">
       <h2>Trades</h2>
-      <div id="trades-table"></div>
+      <pre id="trades-table">No trades yet</pre>
     </div>
 
     <div class="card">
-      <h2>Recent Signals</h2>
-      <div id="signals-list"></div>
+      <h2>Signals</h2>
+      <pre id="signals-list">No recent signals</pre>
     </div>
   </div>
 
