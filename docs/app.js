@@ -1,72 +1,86 @@
-let equityChartInstance = null
+let equityChart = null
 
 async function loadJson(path) {
-  const res = await fetch(path, { cache: "no-store" })
-  if (!res.ok) throw new Error(`Failed to load ${path}`)
-  return res.json()
+  const res = await fetch(path + "?t=" + Date.now(), { cache: "no-store" })
+  if (!res.ok) {
+    throw new Error("Failed to load " + path)
+  }
+  return await res.json()
 }
 
-function metric(label, value) {
-  return `
-    <div class="card">
-      <div>${label}</div>
-      <div style="font-size: 28px; font-weight: 700;">${value}</div>
-    </div>
-  `
+function setText(id, value) {
+  const el = document.getElementById(id)
+  if (el) el.textContent = value
 }
 
-async function main() {
+function buildChart() {
+  const canvas = document.getElementById("equityChart")
+  const ctx = canvas.getContext("2d")
+
+  if (equityChart) {
+    equityChart.destroy()
+  }
+
+  equityChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: "Cum R",
+          data: [],
+          tension: 0.2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false
+    }
+  })
+}
+
+function updateChart(equity) {
+  if (!equityChart) {
+    buildChart()
+  }
+
+  equityChart.data.labels = equity.map((x, i) => x.trade_id ?? i + 1)
+  equityChart.data.datasets[0].data = equity.map(x => x.cum_r ?? 0)
+  equityChart.update("none")
+}
+
+async function refreshDashboard() {
   try {
     const summary = await loadJson("summary.json")
     const equity = await loadJson("equity.json")
     const trades = await loadJson("trades.json")
     const signals = await loadJson("signals.json")
 
-    document.getElementById("status-pill").textContent = summary.status || "ready"
-    document.getElementById("last-update").textContent = `Updated: ${summary.last_update_utc || "-"}`
+    setText("status-pill", summary.status || "ready")
+    setText("last-update", "Updated: " + (summary.last_update_utc || "-"))
+    setText("metric-market", summary.market || "-")
+    setText("metric-trades", summary.total_trades ?? 0)
+    setText("metric-winrate", (summary.winrate ?? 0) + "%")
+    setText("metric-avg-r", summary.avg_r ?? 0)
+    setText("metric-net-r", summary.net_r ?? 0)
 
-    document.getElementById("metrics").innerHTML =
-      metric("Market", summary.market || "-") +
-      metric("Trades", summary.total_trades ?? 0) +
-      metric("Winrate", `${summary.winrate ?? 0}%`) +
-      metric("Avg R", summary.avg_r ?? 0) +
-      metric("Net R", summary.net_r ?? 0)
+    document.getElementById("trades-table").textContent =
+      trades && trades.length ? JSON.stringify(trades, null, 2) : "No trades yet"
 
-    document.getElementById("models-table").innerHTML = "No model stats yet"
+    document.getElementById("signals-list").textContent =
+      signals && signals.length ? JSON.stringify(signals, null, 2) : "No recent signals"
 
-    document.getElementById("trades-table").innerHTML =
-      trades.length ? `<pre>${JSON.stringify(trades, null, 2)}</pre>` : "No trades yet"
-
-    document.getElementById("signals-list").innerHTML =
-      signals.length ? `<pre>${JSON.stringify(signals, null, 2)}</pre>` : "No recent signals"
-
-    const ctx = document.getElementById("equityChart").getContext("2d")
-
-    if (equityChartInstance) {
-      equityChartInstance.destroy()
-    }
-
-    equityChartInstance = new Chart(ctx, {
-      type: "line",
-      data: {
-        labels: equity.map(x => x.trade_id),
-        datasets: [
-          {
-            label: "Cum R",
-            data: equity.map(x => x.cum_r),
-            tension: 0.2
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false
-      }
-    })
+    updateChart(Array.isArray(equity) ? equity : [])
   } catch (err) {
     console.error(err)
-    document.getElementById("metrics").innerHTML = `<div class="card">Dashboard data missing</div>`
+    setText("status-pill", "error")
+    setText("last-update", "Dashboard data missing or invalid")
   }
 }
 
-main()
+window.addEventListener("load", async () => {
+  buildChart()
+  await refreshDashboard()
+})
