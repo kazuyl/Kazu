@@ -1,84 +1,89 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Insight Dashboard</title>
-  <link rel="stylesheet" href="styles.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-  <div class="container">
-    <div class="card">
-      <h1>Insight Dashboard</h1>
-      <div id="status-pill">Loading...</div>
-      <div id="last-update">Updated: -</div>
+<div class="container">
+  <div class="card">
+    <h1>Trading Dashboard</h1>
+    <div id="status-pill">Loading...</div>
+    <div id="last-update">Updated: -</div>
+  </div>
+
+  <div class="metrics">
+    <div class="card metric-card">
+      <div class="metric-label">Market</div>
+      <div id="metric-market" class="metric-value">-</div>
     </div>
-
-    <div id="metrics" class="metrics">
-      <div class="card metric-card"><div class="metric-label">Market</div><div id="metric-market" class="metric-value">-</div></div>
-      <div class="card metric-card"><div class="metric-label">Trades</div><div id="metric-trades" class="metric-value">0</div></div>
-      <div class="card metric-card"><div class="metric-label">Winrate</div><div id="metric-winrate" class="metric-value">0%</div></div>
-      <div class="card metric-card"><div class="metric-label">Avg R</div><div id="metric-avg-r" class="metric-value">0</div></div>
-      <div class="card metric-card"><div class="metric-label">Net R</div><div id="metric-net-r" class="metric-value">0</div></div>
+    <div class="card metric-card">
+      <div class="metric-label">Trades</div>
+      <div id="metric-trades" class="metric-value">0</div>
     </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Current Market Context</h2>
-        <div id="context-grid" class="info-grid"></div>
-      </div>
-
-      <div class="card">
-        <h2>Primary Scenario</h2>
-        <div id="scenario-grid" class="info-grid"></div>
-      </div>
+    <div class="card metric-card">
+      <div class="metric-label">Winrate</div>
+      <div id="metric-winrate" class="metric-value">0%</div>
     </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Open Trade</h2>
-        <div id="open-trade-grid" class="info-grid"></div>
-      </div>
-
-      <div class="card">
-        <h2>Regime Overview</h2>
-        <div id="regime-grid" class="info-grid"></div>
-      </div>
+    <div class="card metric-card">
+      <div class="metric-label">Avg R</div>
+      <div id="metric-avg-r" class="metric-value">0</div>
     </div>
-
-    <div class="card">
-      <h2>Price Chart</h2>
-      <div class="chart-wrap">
-        <canvas id="priceChart"></canvas>
-      </div>
+    <div class="card metric-card">
+      <div class="metric-label">Net R</div>
+      <div id="metric-net-r" class="metric-value">0</div>
     </div>
-
-    <div class="card">
-      <h2>Equity Curve</h2>
-      <div class="chart-wrap">
-        <canvas id="equityChart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Model Stats</h2>
-        <pre id="models-table">No model stats yet</pre>
-      </div>
-
-      <div class="card">
-        <h2>Signals</h2>
-        <pre id="signals-list">No recent signals</pre>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Trades</h2>
-      <pre id="trades-table">No trades yet</pre>
+    <div class="card metric-card">
+      <div class="metric-label">Max DD</div>
+      <div id="metric-max-dd" class="metric-value">0</div>
     </div>
   </div>
 
-  <script src="app.js"></script>
-</body>
-</html>
+  <div class="grid two">
+    <div class="card">
+      <h2>Current Market Context</h2>
+      <div id="context-grid" class="info-grid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Primary Scenario</h2>
+      <div id="scenario-grid" class="info-grid"></div>
+    </div>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <h2>Open Trade</h2>
+      <div id="open-trade-grid" class="info-grid"></div>
+    </div>
+
+    <div class="card">
+      <h2>Regime Overview</h2>
+      <div id="regime-grid" class="info-grid"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Price Chart</h2>
+    <div class="chart-wrap">
+      <canvas id="priceChart"></canvas>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Combined Equity Curve</h2>
+    <div class="chart-wrap">
+      <canvas id="equityChart"></canvas>
+    </div>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <h2>Model Stats</h2>
+      <div id="models-table"></div>
+    </div>
+
+    <div class="card">
+      <h2>Signals</h2>
+      <div id="signals-list"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Recent Trades</h2>
+    <div id="trades-table"></div>
+  </div>
+</div>
