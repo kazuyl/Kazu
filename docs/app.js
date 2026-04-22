@@ -21,6 +21,18 @@ function kv(label, value) {
   `
 }
 
+function fmt(v) {
+  if (v === null || v === undefined || v === "") return "-"
+  return v
+}
+
+function num(v, digits = 2) {
+  if (v === null || v === undefined || v === "") return "-"
+  const n = Number(v)
+  if (Number.isNaN(n)) return v
+  return n.toFixed(digits)
+}
+
 function pill(value) {
   const v = (value || "").toLowerCase()
   const cls = v.includes("bull")
@@ -31,13 +43,19 @@ function pill(value) {
   return `<span class="${cls}">${value}</span>`
 }
 
+function pnlClass(v) {
+  const n = Number(v)
+  if (Number.isNaN(n)) return ""
+  if (n > 0) return "text-green"
+  if (n < 0) return "text-red"
+  return "text-muted"
+}
+
 function buildEquityChart() {
   const canvas = document.getElementById("equityChart")
   const ctx = canvas.getContext("2d")
 
-  if (equityChart) {
-    equityChart.destroy()
-  }
+  if (equityChart) equityChart.destroy()
 
   equityChart = new Chart(ctx, {
     type: "line",
@@ -54,15 +72,30 @@ function buildEquityChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false
+      animation: false,
+      plugins: {
+        legend: {
+          labels: {
+            color: "#eef2ff"
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: "#b8c1ec" },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        },
+        y: {
+          ticks: { color: "#b8c1ec" },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        }
+      }
     }
   })
 }
 
 function updateEquityChart(equity) {
-  if (!equityChart) {
-    buildEquityChart()
-  }
+  if (!equityChart) buildEquityChart()
 
   equityChart.data.labels = equity.map((x, i) => x.trade_id ?? i + 1)
   equityChart.data.datasets[0].data = equity.map(x => x.cum_r ?? 0)
@@ -73,9 +106,7 @@ function buildPriceChart() {
   const canvas = document.getElementById("priceChart")
   const ctx = canvas.getContext("2d")
 
-  if (priceChart) {
-    priceChart.destroy()
-  }
+  if (priceChart) priceChart.destroy()
 
   priceChart = new Chart(ctx, {
     type: "line",
@@ -102,15 +133,30 @@ function buildPriceChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false
+      animation: false,
+      plugins: {
+        legend: {
+          labels: {
+            color: "#eef2ff"
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: "#b8c1ec" },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        },
+        y: {
+          ticks: { color: "#b8c1ec" },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        }
+      }
     }
   })
 }
 
 function updatePriceChart(rows) {
-  if (!priceChart) {
-    buildPriceChart()
-  }
+  if (!priceChart) buildPriceChart()
 
   priceChart.data.labels = rows.map(x => (x.time || "").slice(11, 16))
   priceChart.data.datasets[0].data = rows.map(x => x.close)
@@ -122,57 +168,155 @@ function updatePriceChart(rows) {
 function renderContext(context) {
   document.getElementById("context-grid").innerHTML =
     kv("Symbol", context.symbol) +
-    kv("Price", context.price) +
-    kv("Session", context.session) +
-    kv("Market State", pill(context.market_state)) +
-    kv("RSI", context.rsi) +
-    kv("ATR", context.atr) +
-    kv("EMA 9", context.ema9) +
-    kv("EMA 21", context.ema21) +
-    kv("EMA 50", context.ema50) +
-    kv("Close vs EMA21 ATR", context.close_vs_ema21_atr) +
-    kv("Range % ATR", context.range_pct_atr) +
-    kv("Active Models", (context.active_models || []).join(", "))
+    kv("Price", num(context.price)) +
+    kv("Session", fmt(context.session)) +
+    kv("Market State", pill(context.market_state || "unknown")) +
+    kv("RSI", num(context.rsi)) +
+    kv("ATR", num(context.atr)) +
+    kv("EMA 9", num(context.ema9)) +
+    kv("EMA 21", num(context.ema21)) +
+    kv("EMA 50", num(context.ema50)) +
+    kv("Close vs EMA21 ATR", num(context.close_vs_ema21_atr)) +
+    kv("Range % ATR", num(context.range_pct_atr)) +
+    kv("Active Models", (context.active_models || []).join(", ") || "-")
 }
 
 function renderRegimes(context) {
   document.getElementById("regime-grid").innerHTML =
-    kv("5m", `${context.regime_5m} (${context.confidence_5m})`) +
-    kv("1h", `${context.regime_1h} (${context.confidence_1h})`) +
-    kv("4h", `${context.regime_4h} (${context.confidence_4h})`)
+    kv("5m", `${context.regime_5m || "-"} (${context.confidence_5m ?? "-"})`) +
+    kv("1h", `${context.regime_1h || "-"} (${context.confidence_1h ?? "-"})`) +
+    kv("4h", `${context.regime_4h || "-"} (${context.confidence_4h ?? "-"})`)
 }
 
 function renderScenario(scenario) {
   document.getElementById("scenario-grid").innerHTML =
-    kv("Status", scenario.status) +
-    kv("Model", scenario.entry_model) +
-    kv("Side", scenario.side) +
-    kv("Playbook", scenario.playbook) +
-    kv("Entry", scenario.entry) +
-    kv("Stop", scenario.stop) +
-    kv("TP", scenario.tp) +
-    kv("RR", scenario.rr) +
-    kv("Invalidation", scenario.invalidation) +
-    kv("Confirmation", scenario.confirmation)
+    kv("Status", fmt(scenario.status)) +
+    kv("Model", fmt(scenario.entry_model)) +
+    kv("Side", fmt(scenario.side)) +
+    kv("Playbook", fmt(scenario.playbook)) +
+    kv("Entry", num(scenario.entry)) +
+    kv("Stop", num(scenario.stop)) +
+    kv("TP", num(scenario.tp)) +
+    kv("RR", num(scenario.rr)) +
+    kv("Invalidation", fmt(scenario.invalidation)) +
+    kv("Confirmation", fmt(scenario.confirmation))
 }
 
 function renderOpenTrade(openTrade) {
   if (!openTrade || !openTrade.has_open_trade) {
-    document.getElementById("open-trade-grid").innerHTML = kv("Status", "No open trade")
+    document.getElementById("open-trade-grid").innerHTML = `
+      <div class="empty-state">No open trade</div>
+    `
     return
   }
 
+  const unrealized = openTrade.unrealized_r
   document.getElementById("open-trade-grid").innerHTML =
-    kv("Model", openTrade.model) +
-    kv("Side", openTrade.side) +
-    kv("Entry", openTrade.entry) +
-    kv("Stop", openTrade.stop) +
-    kv("TP", openTrade.tp) +
-    kv("RR", openTrade.rr) +
-    kv("Current Price", openTrade.current_price) +
-    kv("Unrealized R", openTrade.unrealized_r) +
-    kv("Bars Held", openTrade.bars_held) +
-    kv("Opened At", openTrade.opened_at)
+    kv("Model", fmt(openTrade.model)) +
+    kv("Side", fmt(openTrade.side)) +
+    kv("Entry", num(openTrade.entry)) +
+    kv("Stop", num(openTrade.stop)) +
+    kv("TP", num(openTrade.tp)) +
+    kv("RR", num(openTrade.rr)) +
+    kv("Current Price", num(openTrade.current_price)) +
+    kv("Unrealized R", `<span class="${pnlClass(unrealized)}">${num(unrealized)}</span>`) +
+    kv("Bars Held", fmt(openTrade.bars_held)) +
+    kv("Opened At", fmt(openTrade.opened_at))
+}
+
+function renderSignals(signals) {
+  const target = document.getElementById("signals-list")
+
+  if (!signals || !signals.length) {
+    target.innerHTML = `<div class="empty-state">No recent signals</div>`
+    return
+  }
+
+  target.innerHTML = signals.slice(0, 8).map(s => `
+    <div class="signal-card">
+      <div class="signal-top">
+        <div class="signal-model">${fmt(s.model)}</div>
+        <div class="signal-status">${fmt(s.status)}</div>
+      </div>
+      <div class="signal-meta">
+        <span>${fmt(s.side)}</span>
+        <span>${fmt(s.market_state)}</span>
+        <span>${fmt(s.time)}</span>
+      </div>
+    </div>
+  `).join("")
+}
+
+function renderModels(models) {
+  const target = document.getElementById("models-table")
+
+  if (!models || !models.length) {
+    target.innerHTML = `<div class="empty-state">No model stats yet</div>`
+    return
+  }
+
+  target.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Trades</th>
+          <th>Winrate</th>
+          <th>Avg R</th>
+          <th>Net R</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${models.map(m => `
+          <tr>
+            <td>${fmt(m.model)}</td>
+            <td>${fmt(m.trades)}</td>
+            <td>${num(m.winrate, 1)}%</td>
+            <td class="${pnlClass(m.avg_r)}">${num(m.avg_r)}</td>
+            <td class="${pnlClass(m.net_r)}">${num(m.net_r)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `
+}
+
+function renderTrades(trades) {
+  const target = document.getElementById("trades-table")
+
+  if (!trades || !trades.length) {
+    target.innerHTML = `<div class="empty-state">No trades yet</div>`
+    return
+  }
+
+  target.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Model</th>
+          <th>Side</th>
+          <th>Entry</th>
+          <th>Exit</th>
+          <th>R</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${trades.slice().reverse().slice(0, 20).map(t => `
+          <tr>
+            <td>${fmt(t.closed_at || t.opened_at)}</td>
+            <td>${fmt(t.model)}</td>
+            <td>${fmt(t.side)}</td>
+            <td>${num(t.entry)}</td>
+            <td>${num(t.exit_price)}</td>
+            <td class="${pnlClass(t.result_r)}">${num(t.result_r)}</td>
+            <td>${fmt(t.close_reason)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `
 }
 
 async function refreshDashboard() {
@@ -195,19 +339,13 @@ async function refreshDashboard() {
     setText("metric-avg-r", summary.avg_r ?? 0)
     setText("metric-net-r", summary.net_r ?? 0)
 
-    document.getElementById("trades-table").textContent =
-      trades && trades.length ? JSON.stringify(trades, null, 2) : "No trades yet"
-
-    document.getElementById("signals-list").textContent =
-      signals && signals.length ? JSON.stringify(signals, null, 2) : "No recent signals"
-
-    document.getElementById("models-table").textContent =
-      models && models.length ? JSON.stringify(models, null, 2) : "No model stats yet"
-
     renderContext(context)
     renderRegimes(context)
     renderScenario(scenario)
     renderOpenTrade(openTrade)
+    renderSignals(signals)
+    renderModels(models)
+    renderTrades(trades)
     updateEquityChart(Array.isArray(equity) ? equity : [])
     updatePriceChart(Array.isArray(priceRows) ? priceRows : [])
   } catch (err) {
