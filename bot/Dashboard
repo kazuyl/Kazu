@@ -1,291 +1,217 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Insight Dashboard</title>
-  <link rel="stylesheet" href="styles.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-  <div class="container">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">Insight Lab Trading</p>
-        <h1>Nasdaq Bot Dashboard</h1>
-        <p class="sub">Static dashboard for GitHub Pages powered by JSON exported from your Python bot.</p>
-      </div>
-      <div class="pill" id="status-pill">Loading...</div>
-    </header>
+from __future__ import annotations
 
-    <section class="grid metrics" id="metrics"></section>
+from dataclasses import dataclass, asdict
+from typing import Any, Optional
 
-    <section class="grid main-grid">
-      <div class="card span-2">
-        <div class="card-head">
-          <h2>Equity Curve</h2>
-          <span id="last-update">—</span>
-        </div>
-        <canvas id="equityChart"></canvas>
-      </div>
+import pandas as pd
 
-      <div class="card">
-        <div class="card-head">
-          <h2>Models</h2>
-        </div>
-        <div id="models-table"></div>
-      </div>
-    </section>
+from strategy_core import add_indicators, analyze_regime, build_primary_scenario, get_session
 
-    <section class="grid bottom-grid">
-      <div class="card span-2">
-        <div class="card-head">
-          <h2>Recent Trades</h2>
-        </div>
-        <div class="table-wrap" id="trades-table"></div>
-      </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>Recent Signals</h2>
-        </div>
-        <div id="signals-list"></div>
-      </div>
-    </section>
-  </div>
+@dataclass
+class BacktestTrade:
+    trade_id: int
+    time: str
+    model: str
+    side: str
+    session: str
+    market_state: str
+    entry: float
+    stop: float
+    tp: float
+    rr: float
+    result_r: float
+    bars_held: int
+    exit_reason: str
+    status: str = "closed"
 
-  <script src="app.js"></script>
-</body>
-</html>
-async function loadJson(path) {
-  const res = await fetch(path, { cache: "no-store" })
-  if (!res.ok) throw new Error(`Failed to load ${path}`)
-  return res.json()
-}
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
-function metric(label, value, cls = "") {
-  return `
-    <div class="metric">
-      <div class="metric-label">${label}</div>
-      <div class="metric-value ${cls}">${value}</div>
-    </div>
-  `
-}
 
-function clsForNumber(x) {
-  if (x > 0) return "pos"
-  if (x < 0) return "neg"
-  return "neu"
-}
+@dataclass
+class EngineConfig:
+    symbol: str = "NQ=F"
+    max_hold_bars: int = 50
+    slippage: float = 0.25
 
-function renderModels(models) {
-  if (!models.length) return '<p class="small">No model stats yet</p>'
-  const rows = models.map(m => `
-    <tr>
-      <td>${m.model}</td>
-      <td>${m.trades}</td>
-      <td>${m.winrate}%</td>
-      <td class="${clsForNumber(m.avg_r)}">${m.avg_r}</td>
-      <td class="${clsForNumber(m.net_r)}">${m.net_r}</td>
-    </tr>
-  `).join("")
-  return `<table><thead><tr><th>Model</th><th>Trades</th><th>WR</th><th>Avg R</th><th>Net R</th></tr></thead><tbody>${rows}</tbody></table>`
-}
 
-function renderTrades(trades) {
-  if (!trades.length) return '<p class="small">No trades yet</p>'
-  const rows = trades.slice().reverse().slice(0, 20).map(t => `
-    <tr>
-      <td>${new Date(t.time).toLocaleString()}</td>
-      <td>${t.model}</td>
-      <td>${t.session}</td>
-      <td>${t.market_state}</td>
-      <td>${t.rr}</td>
-      <td class="${clsForNumber(t.result_r)}">${t.result_r}</td>
-      <td>${t.exit_reason}</td>
-    </tr>
-  `).join("")
-  return `<table><thead><tr><th>Time</th><th>Model</th><th>Session</th><th>State</th><th>RR</th><th>Result R</th><th>Exit</th></tr></thead><tbody>${rows}</tbody></table>`
-}
+def _prepare_regime_features(df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFrame) -> pd.DataFrame:
+    f5 = add_indicators(df_5m.copy())
+    f1 = add_indicators(df_1h.copy())
+    f4 = add_indicators(df_4h.copy())
 
-function renderSignals(signals) {
-  if (!signals.length) return '<p class="small">No recent signals</p>'
-  return signals.slice().reverse().slice(0, 10).map(s => `
-    <div class="signal-item">
-      <div><strong>${s.model}</strong> · ${s.session}</div>
-      <div class="small">${new Date(s.time).toLocaleString()}</div>
-      <div class="small">Entry ${s.entry} | Stop ${s.stop} | TP ${s.tp}</div>
-    </div>
-  `).join("")
-}
+    reg1 = f1.apply(lambda row: analyze_regime(row), axis=1, result_type="expand")
+    f1[["regime_1h_raw", "confidence_1h_raw"]] = reg1
 
-async function main() {
-  const [summary, equity, trades, models, signals] = await Promise.all([
-    loadJson("dashboard_data/summary.json"),
-    loadJson("dashboard_data/equity.json"),
-    loadJson("dashboard_data/trades.json"),
-    loadJson("dashboard_data/models.json"),
-    loadJson("dashboard_data/signals.json")
-  ])
+    reg4 = f4.apply(lambda row: analyze_regime(row), axis=1, result_type="expand")
+    f4[["regime_4h_raw", "confidence_4h_raw"]] = reg4
 
-  document.getElementById("status-pill").textContent = summary.status.toUpperCase()
-  document.getElementById("last-update").textContent = `Updated ${new Date(summary.last_update_utc).toLocaleString()}`
+    reg5 = f5.apply(lambda row: analyze_regime(row), axis=1, result_type="expand")
+    f5[["regime_5m", "confidence_5m"]] = reg5
+    f5["session"] = f5["Datetime"].dt.tz_convert("UTC").apply(get_session)
 
-  document.getElementById("metrics").innerHTML = [
-    metric("Market", summary.market),
-    metric("Trades", summary.total_trades),
-    metric("Winrate", `${summary.winrate}%`),
-    metric("Avg R", summary.avg_r, clsForNumber(summary.avg_r)),
-    metric("Net R", summary.net_r, clsForNumber(summary.net_r)),
-  ].join("")
+    f1_small = f1[["Datetime", "regime_1h_raw", "confidence_1h_raw"]].rename(
+        columns={"Datetime": "ts_1h"}
+    )
+    f4_small = f4[["Datetime", "regime_4h_raw", "confidence_4h_raw"]].rename(
+        columns={"Datetime": "ts_4h"}
+    )
 
-  document.getElementById("models-table").innerHTML = renderModels(models)
-  document.getElementById("trades-table").innerHTML = renderTrades(trades)
-  document.getElementById("signals-list").innerHTML = renderSignals(signals)
+    merged = pd.merge_asof(
+        f5.sort_values("Datetime"),
+        f1_small.sort_values("ts_1h"),
+        left_on="Datetime",
+        right_on="ts_1h",
+        direction="backward",
+    )
+    merged = pd.merge_asof(
+        merged.sort_values("Datetime"),
+        f4_small.sort_values("ts_4h"),
+        left_on="Datetime",
+        right_on="ts_4h",
+        direction="backward",
+    )
+    merged["regime_1h"] = merged["regime_1h_raw"]
+    merged["confidence_1h"] = merged["confidence_1h_raw"]
+    merged["regime_4h"] = merged["regime_4h_raw"]
+    merged["confidence_4h"] = merged["confidence_4h_raw"]
+    return merged
 
-  const ctx = document.getElementById("equityChart")
-  new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: equity.map(x => x.trade_id),
-      datasets: [{
-        label: "Cum R",
-        data: equity.map(x => x.cum_r),
-        tension: 0.25,
-        borderWidth: 2,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: "#eef2ff" } } },
-      scales: {
-        x: { ticks: { color: "#9aa5ce" }, grid: { color: "rgba(255,255,255,0.06)" } },
-        y: { ticks: { color: "#9aa5ce" }, grid: { color: "rgba(255,255,255,0.06)" } },
-      }
+
+def _simulate_trade(df: pd.DataFrame, start_idx: int, scenario: dict[str, Any], max_hold_bars: int, slippage: float) -> Optional[BacktestTrade]:
+    if scenario.get("side") != "long":
+        return None
+
+    entry = float(scenario["entry"]) + slippage
+    stop = float(scenario["stop"]) - slippage
+    tp = float(scenario["tp"])
+    risk = entry - stop
+    if risk <= 0:
+        return None
+
+    exit_reason = "timeout"
+    exit_price = float(df.iloc[min(start_idx + max_hold_bars, len(df) - 1)]["Close"])
+    bars_held = 0
+
+    for j in range(start_idx + 1, min(start_idx + max_hold_bars + 1, len(df))):
+        row = df.iloc[j]
+        bars_held = j - start_idx
+        low = float(row["Low"])
+        high = float(row["High"])
+
+        if low <= stop:
+            exit_price = stop
+            exit_reason = "stop"
+            break
+        if high >= tp:
+            exit_price = tp
+            exit_reason = "tp"
+            break
+
+    result_r = round((exit_price - entry) / risk, 4)
+    opened = df.iloc[start_idx]
+    return BacktestTrade(
+        trade_id=0,
+        time=opened["Datetime"].isoformat(),
+        model=str(scenario["entry_model"]),
+        side="long",
+        session=str(opened["session"]),
+        market_state=str(scenario["market_state"]),
+        entry=round(entry, 2),
+        stop=round(stop, 2),
+        tp=round(tp, 2),
+        rr=float(scenario["rr"]),
+        result_r=result_r,
+        bars_held=bars_held,
+        exit_reason=exit_reason,
+    )
+
+
+def run_backtest(df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFrame, config: EngineConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    df = _prepare_regime_features(df_5m, df_1h, df_4h)
+
+    trades: list[BacktestTrade] = []
+    equity: list[dict[str, Any]] = []
+    cum_r = 0.0
+    trade_id = 0
+    next_available_idx = 0
+
+    for i in range(len(df)):
+        if i < next_available_idx:
+            continue
+
+        row = df.iloc[i]
+        scenario = build_primary_scenario(row)
+        if scenario.get("status") == "stand aside" or scenario.get("side") is None:
+            continue
+
+        trade = _simulate_trade(df, i, scenario, config.max_hold_bars, config.slippage)
+        if trade is None:
+            continue
+
+        trade_id += 1
+        trade.trade_id = trade_id
+        trades.append(trade)
+        cum_r = round(cum_r + trade.result_r, 4)
+        equity.append(
+            {
+                "trade_id": trade_id,
+                "time": trade.time,
+                "model": trade.model,
+                "result_r": trade.result_r,
+                "cum_r": cum_r,
+            }
+        )
+        next_available_idx = i + max(1, trade.bars_held)
+
+    trade_dicts = [t.to_dict() for t in trades]
+    summary = build_summary(config.symbol, trade_dicts)
+    return trade_dicts, equity, summary
+
+
+def build_summary(symbol: str, trades: list[dict[str, Any]]) -> dict[str, Any]:
+    if not trades:
+        return {
+            "market": symbol,
+            "status": "no_trades",
+            "total_trades": 0,
+            "winrate": 0.0,
+            "avg_r": 0.0,
+            "net_r": 0.0,
+            "max_dd_r": 0.0,
+            "last_update_utc": pd.Timestamp.utcnow().isoformat(),
+        }
+
+    results = pd.Series([float(t["result_r"]) for t in trades], dtype="float64")
+    cum = results.cumsum()
+    dd = cum - cum.cummax()
+    return {
+        "market": symbol,
+        "status": "running",
+        "total_trades": int(len(trades)),
+        "winrate": round(float((results > 0).mean() * 100), 2),
+        "avg_r": round(float(results.mean()), 4),
+        "net_r": round(float(results.sum()), 4),
+        "max_dd_r": round(float(abs(dd.min())), 4),
+        "last_update_utc": pd.Timestamp.utcnow().isoformat(),
     }
-  })
-}
 
-main().catch(err => {
-  console.error(err)
-  document.getElementById("metrics").innerHTML = `<div class="metric"><div class="metric-label">Error</div><div class="metric-value neg">Dashboard data missing</div></div>`
-})
-:root {
-  --bg: #0b1020;
-  --panel: #121934;
-  --panel-2: #1a2447;
-  --text: #eef2ff;
-  --muted: #9aa5ce;
-  --accent: #6ea8fe;
-  --green: #39d98a;
-  --red: #ff6b6b;
-  --yellow: #ffd166;
-  --border: rgba(255,255,255,0.08);
-}
 
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  font-family: Inter, system-ui, Arial, sans-serif;
-  background: linear-gradient(180deg, #0a0f1e 0%, #0d1429 100%);
-  color: var(--text);
-}
-.container {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 24px;
-}
-.hero {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-.eyebrow {
-  color: var(--accent);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-size: 12px;
-  margin: 0 0 10px;
-}
-h1, h2, p { margin: 0; }
-.sub { color: var(--muted); margin-top: 8px; max-width: 700px; }
-.pill {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 10px 14px;
-  color: var(--muted);
-}
-.grid {
-  display: grid;
-  gap: 16px;
-}
-.metrics {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin-bottom: 16px;
-}
-.main-grid {
-  grid-template-columns: 2fr 1fr;
-  margin-bottom: 16px;
-}
-.bottom-grid {
-  grid-template-columns: 2fr 1fr;
-}
-.card {
-  background: rgba(18, 25, 52, 0.88);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 18px;
-  backdrop-filter: blur(10px);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-}
-.metric {
-  background: rgba(18, 25, 52, 0.88);
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  padding: 16px;
-}
-.metric-label {
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.metric-value {
-  font-size: 28px;
-  font-weight: 700;
-}
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 14px;
-}
-.table-wrap { overflow-x: auto; }
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-th, td {
-  padding: 10px 8px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  font-size: 14px;
-}
-th { color: var(--muted); font-weight: 600; }
-.small { font-size: 12px; color: var(--muted); }
-.pos { color: var(--green); }
-.neg { color: var(--red); }
-.neu { color: var(--yellow); }
-.signal-item {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.signal-item:last-child { border-bottom: none; }
-@media (max-width: 980px) {
-  .metrics, .main-grid, .bottom-grid { grid-template-columns: 1fr; }
-}
+def build_model_stats(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not trades:
+        return []
+    df = pd.DataFrame(trades)
+    out = []
+    for model, grp in df.groupby("model"):
+        results = grp["result_r"].astype(float)
+        out.append(
+            {
+                "model": model,
+                "trades": int(len(grp)),
+                "winrate": round(float((results > 0).mean() * 100), 2),
+                "avg_r": round(float(results.mean()), 4),
+                "net_r": round(float(results.sum()), 4),
+            }
+        )
+    return sorted(out, key=lambda x: x["net_r"], reverse=True)
