@@ -33,12 +33,15 @@ USE_MODELS = {
     "rb_long": False,
     "rb_short": False,
     "aggr_pullback": True,
-    "ifvg_long": True,
+    "ifvg_long": False,
+    "london_breakout_long": False,
+    "london_sweep_reclaim_long": True,
+    "london_sweep_reclaim_short": True,
 }
 print("ACTIVE MODELS:", USE_MODELS)
 
 CONFIG = {
-    "preferred_sessions": ["ny_open", "power_hour"],
+    "preferred_sessions": ["ny_open", "power_hour", "london"],
     "backtest_5m_period": "60d",
     "backtest_1h_period": "180d",
     "backtest_4h_period": "240d",
@@ -58,6 +61,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     df = df.copy()
+
     df["ema9"] = df["Close"].ewm(span=9).mean()
     df["ema21"] = df["Close"].ewm(span=21).mean()
     df["ema50"] = df["Close"].ewm(span=50).mean()
@@ -67,8 +71,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["lower_wick"] = df[["Open", "Close"]].min(axis=1) - df["Low"]
     df["upper_wick"] = df["High"] - df[["Open", "Close"]].max(axis=1)
 
-    df["close_position"] = ((df["Close"] - df["Low"]) / df["candle_range"]).replace([float("inf"), -float("inf")], pd.NA)
-    
+    df["close_position"] = (
+        (df["Close"] - df["Low"]) / df["candle_range"]
+    ).replace([float("inf"), -float("inf")], pd.NA)
 
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
@@ -90,43 +95,84 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["breakout_level_20"] = df["High"].rolling(20).max().shift(1)
     df["breakdown_level_20"] = df["Low"].rolling(20).min().shift(1)
 
-            # ---------- IFVG / imbalance features ----------
+    # ---------- IFVG / imbalance features ----------
     df["high_2_back"] = df["High"].shift(2)
     df["low_2_back"] = df["Low"].shift(2)
 
-    # Bullish FVG exists when current low is above high from 2 candles back
     df["bull_fvg_exists"] = df["Low"] > df["High"].shift(2)
-
-    # Zone boundaries for bullish FVG
     df["bull_fvg_top"] = df["Low"].where(df["bull_fvg_exists"])
     df["bull_fvg_bottom"] = df["High"].shift(2).where(df["bull_fvg_exists"])
 
-    # Carry latest bullish FVG zone forward
     df["active_bull_fvg_top"] = df["bull_fvg_top"].ffill()
     df["active_bull_fvg_bottom"] = df["bull_fvg_bottom"].ffill()
 
-    # Midpoint of active zone
     df["active_bull_fvg_mid"] = (
         df["active_bull_fvg_top"] + df["active_bull_fvg_bottom"]
     ) / 2
 
-    # Did current candle trade into the active FVG?
     df["bull_fvg_tapped"] = (
         (df["Low"] <= df["active_bull_fvg_top"]) &
         (df["High"] >= df["active_bull_fvg_bottom"])
     )
 
-    # Did price close back above the midpoint / reclaim the zone?
-    df["bull_fvg_reclaim"] = (
-        df["Close"] > df["active_bull_fvg_mid"]
-    )
-
-    # FVG width relative to ATR
+    df["bull_fvg_reclaim"] = df["Close"] > df["active_bull_fvg_mid"]
     df["bull_fvg_width"] = df["active_bull_fvg_top"] - df["active_bull_fvg_bottom"]
     df["bull_fvg_width_atr"] = df["bull_fvg_width"] / df["atr"]
+
+    # ---------- Session features ----------
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+
+    df["session"] = [get_session(ts) for ts in df.index]
+    df["day_key"] = df.index.floor("D")
+
+    asia_mask = df["session"] == "asia"
+
+    asia_high = (
+        df["High"]
+        .where(asia_mask)
+        .groupby(df["day_key"])
+        .transform("max")
+    )
+
+    asia_low = (
+        df["Low"]
+        .where(asia_mask)
+        .groupby(df["day_key"])
+        .transform("min")
+    )
+
+    df["asia_high"] = asia_high.groupby(df["day_key"]).ffill()
+    df["asia_low"] = asia_low.groupby(df["day_key"]).ffill()
+
+    df["above_asia_high"] = df["High"] > df["asia_high"]
+    df["asia_range"] = df["asia_high"] - df["asia_low"]
+    df["asia_range_atr"] = df["asia_range"] / df["atr"]
+    
+    df["hour_utc"] = pd.to_datetime(df.index).tz_convert("UTC").hour if df.index.tz is not None else pd.to_datetime(df.index).tz_localize("UTC").hour
+
+        # recent sweep below Asia low in the last 5 bars
+    df["swept_asia_low"] = df["Low"] < df["asia_low"]
+    df["recent_sweep_asia_low"] = (
+        df["swept_asia_low"]
+        .shift(1)
+        .rolling(8)
+        .max()
+        .fillna(0)
+        .astype(bool)
+    )
+
+    df["swept_asia_high"] = df["High"] > df["asia_high"]
+    df["recent_sweep_asia_high"] = (
+        df["swept_asia_high"]
+        .shift(1)
+        .rolling(8)
+        .max()
+        .fillna(0)
+        .astype(bool)
+    )
+
     return df
-
-
 def analyze_regime(row: pd.Series):
     if pd.isna(row["ema9"]) or pd.isna(row["ema21"]) or pd.isna(row["rsi"]):
         return "unknown", 0
@@ -147,7 +193,20 @@ def analyze_regime(row: pd.Series):
 
 
 def get_session(ts) -> str:
+    # force UTC for consistent session logic
+    ts = pd.Timestamp(ts)
+
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+
     minutes = ts.hour * 60 + ts.minute
+
+    if 0 <= minutes < 7 * 60:
+        return "asia"
+    if 7 * 60 <= minutes < 13 * 60 + 30:
+        return "london"
     if 13 * 60 + 30 <= minutes < 15 * 60:
         return "ny_open"
     if 15 * 60 <= minutes < 18 * 60:
@@ -155,7 +214,6 @@ def get_session(ts) -> str:
     if 18 * 60 <= minutes < 20 * 60:
         return "power_hour"
     return "off_hours"
-
 
 def calculate_contracts(account_size: float, risk_percent: float, entry: float, stop: float) -> int:
     risk_amount = account_size * (risk_percent / 100)
@@ -276,10 +334,10 @@ def model_ifvg_long(row: pd.Series, market_state: str):
     if row["session"] not in CONFIG["preferred_sessions"]:
         return None
 
-    if row["regime_1h"] != "bull" or row["confidence_1h"] < 2:
+    if row["regime_1h"] != "bull":
         return None
 
-    if row["regime_4h"] != "bull" or row["confidence_4h"] < 2:
+    if row["regime_4h"] not in ["bull", "chop"]:
         return None
 
     if pd.isna(row["atr"]) or pd.isna(row["ema21"]):
@@ -507,17 +565,17 @@ def model_breakout_retest_long(row: pd.Series, market_state: str):
 
 def model_trend_ema_pullback_long(row: pd.Series, market_state: str):
     
-    if market_state != "bull_trend":
+    if market_state not in ["bull_trend", "bull_pullback"]:
         return None
 
     if row["session"] not in CONFIG["preferred_sessions"]:
         return None
 
     # stärkeren Trend erzwingen
-    if row["regime_1h"] != "bull" or row["confidence_1h"] < 2:
+    if row["regime_1h"] != "bull":
         return None
 
-    if row["regime_4h"] != "bull" or row["confidence_4h"] < 2:
+    if row["regime_4h"] not in ["bull", "chop"]:
         return None
 
     if row["confidence_5m"] < 2:
@@ -599,6 +657,201 @@ def model_trend_ema_reject_short(row: pd.Series, market_state: str):
         "sellers reject bounce into EMA zone",
     )
 
+def model_london_breakout_long(row, market_state):
+
+    if row["session"] != "london":
+        return None
+
+    if pd.isna(row["asia_high"]) or pd.isna(row["atr"]):
+        return None
+
+    # ONLY condition: breakout
+    if row["High"] <= row["asia_high"]:
+        return None
+
+    entry = row["Close"]
+    stop = row["asia_high"] - row["atr"] * 0.3
+    tp = entry + (entry - stop) * 2.0
+
+    if stop >= entry:
+        return None
+
+    if row["Close"] < row["ema21"]:
+        return None
+
+    return _base_setup(
+        "long",
+        market_state,
+        "london_breakout_raw",
+        "london_breakout_long",
+        entry,
+        stop,
+        tp,
+        "fails back below asia high",
+        "simple breakout",
+    )
+
+def debug_london_breakout(df: pd.DataFrame):
+    checks = {
+        "total_rows": len(df),
+        "session_london": 0,
+        "market_state_ok": 0,
+        "regime_1h_ok": 0,
+        "regime_4h_ok": 0,
+        "asia_ready": 0,
+        "asia_range_ok": 0,
+        "above_asia_high": 0,
+        "rsi_ok": 0,
+        "range_pct_atr_ok": 0,
+        "close_vs_ema21_ok": 0,
+        "all_conditions": 0,
+    }
+
+def model_london_sweep_reclaim_long(row: pd.Series, market_state: str):
+    # Session: nur London
+    if row["session"] != "london":
+        return None
+
+    # Asia levels müssen existieren
+    if pd.isna(row["asia_high"]) or pd.isna(row["asia_low"]) or pd.isna(row["atr"]):
+        return None
+
+    # HTF leicht bullish
+    if row["regime_1h"] != "bull":
+        return None
+
+    if row["regime_4h"] not in ["bull", "chop"]:
+        return None
+
+    # Sweep muss in den letzten 5 Bars passiert sein
+    if not bool(row["recent_sweep_asia_low"]):
+        return None
+
+    # Reclaim passiert jetzt
+    if row["Close"] <= row["asia_low"]:
+        return None
+
+    # Candle sollte nicht komplett tot sein
+    if row["range_pct_atr"] < 0.2:
+        return None
+
+    # Momentum Filter
+    if row["rsi"] < 43 or row["rsi"] > 78:
+        return None
+
+    entry = row["Close"]
+    stop = row["Low"] - row["atr"] * 0.15
+
+    if stop >= entry:
+        return None
+
+    tp = entry + (entry - stop) * 2.0
+
+    return _base_setup(
+        "long",
+        market_state,
+        "london_sweep_reclaim_long",
+        "london_sweep_reclaim_long",
+        entry,
+        stop,
+        tp,
+        "fails back below Asia low after reclaim",
+        "Asia low gets swept and price reclaims above it",
+    )
+
+def model_london_sweep_reclaim_short(row: pd.Series, market_state: str):
+    if row["session"] != "london":
+        return None
+
+    if pd.isna(row["asia_high"]) or pd.isna(row["asia_low"]) or pd.isna(row["atr"]):
+        return None
+
+    if row["regime_1h"] != "bear":
+        return None
+
+    if row["regime_4h"] not in ["bear", "chop"]:
+        return None
+
+    # recent sweep ABOVE asia high
+    if not bool(row["recent_sweep_asia_high"]):
+        return None
+
+    # reclaim back below
+    if row["Close"] >= row["asia_high"]:
+        return None
+
+    if row["range_pct_atr"] < 0.2:
+        return None
+
+    if row["rsi"] < 22 or row["rsi"] > 57:
+        return None
+
+    entry = row["Close"]
+    stop = row["High"] + row["atr"] * 0.15
+
+    if stop <= entry:
+        return None
+
+    tp = entry - (stop - entry) * 2.0
+
+    return _base_setup(
+        "short",
+        market_state,
+        "london_sweep_reclaim_short",
+        "london_sweep_reclaim_short",
+        entry,
+        stop,
+        tp,
+        "fails back above Asia high",
+        "Asia high gets swept and price reclaims below it",
+    )
+
+    for _, row in df.iterrows():
+        checks["total_rows"] += 0  # keeps key visible
+
+        session_ok = row.get("session") == "london"
+        market_ok = row.get("market_state") in ["bull_trend", "bull_pullback"]
+        regime_1h_ok = row.get("regime_1h") == "bull" and row.get("confidence_1h", 0) >= 2
+        regime_4h_ok = row.get("regime_4h") == "bull" and row.get("confidence_4h", 0) >= 2
+
+        asia_ready = not pd.isna(row.get("asia_high")) and not pd.isna(row.get("asia_low")) and not pd.isna(row.get("atr"))
+        asia_range_ok = asia_ready and not pd.isna(row.get("asia_range_atr")) and 0.25 <= row.get("asia_range_atr") <= 2.5
+        breakout_ok = asia_ready and bool(row.get("above_asia_high", False))
+        rsi_ok = not pd.isna(row.get("rsi")) and 50 <= row.get("rsi") <= 72
+        range_ok = not pd.isna(row.get("range_pct_atr")) and row.get("range_pct_atr") >= 0.4
+        ema_ok = not pd.isna(row.get("close_vs_ema21_atr")) and row.get("close_vs_ema21_atr") <= 1.8
+
+        if session_ok:
+            checks["session_london"] += 1
+        if session_ok and market_ok:
+            checks["market_state_ok"] += 1
+        if session_ok and market_ok and regime_1h_ok:
+            checks["regime_1h_ok"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok:
+            checks["regime_4h_ok"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok and asia_ready:
+            checks["asia_ready"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok and asia_ready and asia_range_ok:
+            checks["asia_range_ok"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok and asia_ready and asia_range_ok and breakout_ok:
+            checks["above_asia_high"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok and asia_ready and asia_range_ok and breakout_ok and rsi_ok:
+            checks["rsi_ok"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok and asia_ready and asia_range_ok and breakout_ok and rsi_ok and range_ok:
+            checks["range_pct_atr_ok"] += 1
+        if session_ok and market_ok and regime_1h_ok and regime_4h_ok and asia_ready and asia_range_ok and breakout_ok and rsi_ok and range_ok and ema_ok:
+            checks["close_vs_ema21_ok"] += 1
+
+        if (
+            session_ok and market_ok and regime_1h_ok and regime_4h_ok and
+            asia_ready and asia_range_ok and breakout_ok and
+            rsi_ok and range_ok and ema_ok
+        ):
+            checks["all_conditions"] += 1
+
+    print("\n=== LONDON MODEL DEBUG ===")
+    for k, v in checks.items():
+        print(f"{k}: {v}")
 
 ENTRY_MODELS = []
 if USE_MODELS["ema_pullback"]:
@@ -613,12 +866,37 @@ if USE_MODELS["aggr_pullback"]:
     ENTRY_MODELS.append(model_aggressive_pullback_long)
 if USE_MODELS["ifvg_long"]:
     ENTRY_MODELS.append(model_ifvg_long)
+if USE_MODELS["london_breakout_long"]:
+    ENTRY_MODELS.append(model_london_breakout_long)
+if USE_MODELS["london_sweep_reclaim_long"]:
+    ENTRY_MODELS.append(model_london_sweep_reclaim_long)
+if USE_MODELS["london_sweep_reclaim_short"]:
+    ENTRY_MODELS.append(model_london_sweep_reclaim_short)
 
 
 def choose_best_setup(candidates: list[dict]):
     if not candidates:
         return None
     return sorted(candidates, key=lambda x: (x["rr"], x["entry_model"]), reverse=True)[0]
+
+print("\n=== COLUMN CHECK ===")
+needed_cols = [
+    "session",
+    "asia_high",
+    "asia_low",
+    "above_asia_high",
+    "asia_range_atr",
+    "regime_1h",
+    "confidence_1h",
+    "regime_4h",
+    "confidence_4h",
+    "range_pct_atr",
+    "close_vs_ema21_atr",
+    "rsi",
+]
+
+    
+
 
 
 def build_primary_scenario(row: pd.Series) -> dict:
@@ -635,7 +913,7 @@ def build_primary_scenario(row: pd.Series) -> dict:
             tp=None,
             rr=None,
             invalidation="Outside preferred session",
-            confirmation="Wait for NY open or power hour",
+            confirmation="Wait for London, NY open, or power hour",
             status="stand aside",
         ).to_dict()
 
@@ -669,3 +947,5 @@ def safe_number(value, digits: int = 2):
     if pd.isna(value):
         return None
     return round(float(value), digits)
+
+
