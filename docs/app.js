@@ -1,3 +1,5 @@
+let equityChartInstance = null
+
 async function loadJson(path) {
   const res = await fetch(path, { cache: "no-store" })
   if (!res.ok) throw new Error(`Failed to load ${path}`)
@@ -38,15 +40,23 @@ async function main() {
     document.getElementById("signals-list").innerHTML =
       signals.length ? `<pre>${JSON.stringify(signals, null, 2)}</pre>` : "No recent signals"
 
-    const ctx = document.getElementById("equityChart")
-    new Chart(ctx, {
+    const ctx = document.getElementById("equityChart").getContext("2d")
+
+    if (equityChartInstance) {
+      equityChartInstance.destroy()
+    }
+
+    equityChartInstance = new Chart(ctx, {
       type: "line",
       data: {
         labels: equity.map(x => x.trade_id),
-        datasets: [{
-          label: "Cum R",
-          data: equity.map(x => x.cum_r)
-        }]
+        datasets: [
+          {
+            label: "Cum R",
+            data: equity.map(x => x.cum_r),
+            tension: 0.2
+          }
+        ]
       },
       options: {
         responsive: true,
